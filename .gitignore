@@ -36,11 +36,16 @@ coverage.xml
 Thumbs.db
 desktop.ini
 
-# Local scratch from the tool itself
+# Local scratch output from the tool itself
 *.guard.json
 *.guard.md
 guard-report.json
 guard-report.md
+report.json
+report.md
+report.txt
+annotations.txt
+schema.sql
 
 # Test scratch space (kept inside the repo so restricted sandboxes can delete it)
 .tmp/
