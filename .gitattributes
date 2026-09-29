@@ -1,0 +1,25 @@
+# Normalise line endings so the repository is identical on every platform.
+* text=auto eol=lf
+
+*.py text eol=lf
+*.sql text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
+# Fixtures are byte-exact inputs: a CRLF here would change what the tokenizer
+# sees on a Windows checkout, and every line number in a finding would shift.
+tests/fixtures/** -text
+examples/**/*.sql -text
+
+# Windows-only files that legitimately want CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.zip binary
