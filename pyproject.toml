@@ -41,11 +41,11 @@ classifiers = [
 migration-guard = "migration_guard.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/zekia0104/mysql-migration-guard"
-Repository = "https://github.com/zekia0104/mysql-migration-guard"
-Issues = "https://github.com/zekia0104/mysql-migration-guard/issues"
-Changelog = "https://github.com/zekia0104/mysql-migration-guard/blob/main/CHANGELOG.md"
-Documentation = "https://github.com/zekia0104/mysql-migration-guard#readme"
+Homepage = "https://github.com/zekia0104/Mysql"
+Repository = "https://github.com/zekia0104/Mysql"
+Issues = "https://github.com/zekia0104/Mysql/issues"
+Changelog = "https://github.com/zekia0104/Mysql/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/zekia0104/Mysql#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/migration_guard"]

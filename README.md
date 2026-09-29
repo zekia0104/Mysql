@@ -2,7 +2,7 @@
 
 **Find the statements in your MySQL migration that will lock production, before they run.**
 
-[![CI](https://github.com/zekia0104/mysql-migration-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/zekia0104/mysql-migration-guard/actions/workflows/ci.yml)
+[![CI](https://github.com/zekia0104/Mysql/actions/workflows/ci.yml/badge.svg)](https://github.com/zekia0104/Mysql/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -55,9 +55,9 @@ migration before it is applied.
 No third-party dependencies. Python 3.11+ and nothing else.
 
 ```bash
-pipx install git+https://github.com/zekia0104/mysql-migration-guard
+pipx install git+https://github.com/zekia0104/Mysql
 # or, from a checkout
-git clone https://github.com/zekia0104/mysql-migration-guard guard
+git clone https://github.com/zekia0104/Mysql guard
 cd guard && python -m pip install .
 ```
 
@@ -117,7 +117,7 @@ server it is going to is reviewing half the problem.
 The repository ships a composite action, so the check is four lines:
 
 ```yaml
-- uses: zekia0104/mysql-migration-guard@v1
+- uses: zekia0104/Mysql@v1
   with:
     paths: migrations
     target-version: "8.0.29"
@@ -252,7 +252,7 @@ Stated plainly, because a check that overstates itself is worse than none:
 ## Development
 
 ```bash
-git clone https://github.com/zekia0104/mysql-migration-guard guard
+git clone https://github.com/zekia0104/Mysql guard
 cd guard
 python -m unittest discover -s tests -t . -v   # 119 tests, no dependencies
 ruff check .                                    # optional lint

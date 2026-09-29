@@ -41,7 +41,7 @@ an annoying warning. When you genuinely cannot tell, return `UNKNOWN` and let
 ## Getting set up
 
 ```bash
-git clone https://github.com/zekia0104/mysql-migration-guard guard
+git clone https://github.com/zekia0104/Mysql guard
 cd guard
 
 # Tests: no install required

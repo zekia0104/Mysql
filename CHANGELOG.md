@@ -120,5 +120,5 @@ First release.
   ``"NUMBER"`` instead of the ``"number"`` constant: they never fired, looked
   green in review, and protected nobody.
 
-[Unreleased]: https://github.com/zekia0104/mysql-migration-guard/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/zekia0104/mysql-migration-guard/releases/tag/v0.1.0
+[Unreleased]: https://github.com/zekia0104/Mysql/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/zekia0104/Mysql/releases/tag/v0.1.0

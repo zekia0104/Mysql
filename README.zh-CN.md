@@ -2,7 +2,7 @@
 
 **在迁移跑起来之前，找出那些会锁死生产库的语句。**
 
-[![CI](https://github.com/zekia0104/mysql-migration-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/zekia0104/mysql-migration-guard/actions/workflows/ci.yml)
+[![CI](https://github.com/zekia0104/Mysql/actions/workflows/ci.yml/badge.svg)](https://github.com/zekia0104/Mysql/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -40,9 +40,9 @@ CRITICAL migrations/2026_09_26__orders_indexing.sql:4  orders: MODIFY COLUMN reb
 零第三方依赖。只要有 Python 3.11+。
 
 ```bash
-pipx install git+https://github.com/zekia0104/mysql-migration-guard
+pipx install git+https://github.com/zekia0104/Mysql
 # 或从源码
-git clone https://github.com/zekia0104/mysql-migration-guard guard
+git clone https://github.com/zekia0104/Mysql guard
 cd guard && python -m pip install .
 ```
 
@@ -89,7 +89,7 @@ $ migration-guard examples/good --target-version 5.7 ; echo $?
 仓库自带一个 composite action，四行 YAML 就能接入：
 
 ```yaml
-- uses: zekia0104/mysql-migration-guard@v1
+- uses: zekia0104/Mysql@v1
   with:
     paths: migrations
     target-version: "8.0.29"
@@ -183,7 +183,7 @@ USE shop;
 ## 参与开发
 
 ```bash
-git clone https://github.com/zekia0104/mysql-migration-guard guard
+git clone https://github.com/zekia0104/Mysql guard
 cd guard
 python -m unittest discover -s tests -t . -v   # 119 个测试，零依赖
 ruff check .                                    # 可选
