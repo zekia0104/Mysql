@@ -152,6 +152,11 @@ def _wrap(text: str, width: int, indent: int) -> str:
     return "\n".join(" " * indent + line for line in lines)
 
 
+def _plural(count: int, singular: str, plural: str = "") -> str:
+    """``1 statement`` / ``3 statements`` -- the report is read by people."""
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
 def _summary(report: Report, style: Style) -> str:
     counts = report.counts()
     status = report.status
@@ -162,10 +167,8 @@ def _summary(report: Report, style: Style) -> str:
         f"{counts[Severity.INFO]} info",
     ]
     headline = style.paint(f"[{label}]", SEVERITY_COLOR[status], "bold")
-    return (
-        f"  {report.statement_count} statement(s) in {len(report.files)} file(s)"
-        f"   {headline}   {'  '.join(parts)}"
-    )
+    scope = f"{_plural(report.statement_count, 'statement')} in {_plural(len(report.files), 'file')}"
+    return f"  {scope}   {headline}   {'  '.join(parts)}"
 
 
 def _finding(finding: Finding, style: Style, width: int) -> list[str]:
@@ -204,7 +207,7 @@ def render(
 
     for review in report.files:
         lines.append("")
-        header = f"{review.path}  ({review.statement_count} statements) "
+        header = f"{review.path}  ({_plural(review.statement_count, 'statement')}) "
         lines.append(
             style.paint(
                 header + style.glyph("light") * max(width - len(header), 4), "bold", "blue"
