@@ -133,7 +133,7 @@ line of the diff, so a reviewer sees it in context:
 
 ## What it checks
 
-27 rules. The ones that catch the incidents:
+33 rules. The ones that catch the incidents:
 
 | Rule | Severity | What it catches |
 | --- | --- | --- |
@@ -228,9 +228,18 @@ Stated plainly, because a check that overstates itself is worse than none:
 - **No database connection.** The review is entirely static, so the tool does not
   know how many rows a table has. `ddl.table-rebuild` on a 50-row table is
   harmless — that is what `allow(...)` is for.
-- **No schema reading yet.** Type-level checks (narrowing a column, duplicate or
-  redundant indexes, a `TEXT` index with no prefix length) need the existing
-  schema and are planned for 0.2.
+- **The type and index checks need `--schema`.** Without it the six schema-aware
+  rules stay silent rather than guessing, and the report says so. The input is a
+  `mysqldump --no-data` file, so still no connection, no driver, no credentials:
+
+  ```bash
+  mysqldump --no-data --skip-comments --compact shop > schema.sql
+  migration-guard --schema schema.sql migrations/
+  ```
+
+  With it, `examples/bad` reports six findings it cannot see otherwise, including
+  an index over a `TEXT` column and a `MODIFY` that narrows a `DECIMAL(12,2)`
+  to `DECIMAL(8,2)`.
 - **Predicate analysis is heuristic.** Without the schema there is no way to know
   whether the optimizer can use an index, so `dml.unbounded-predicate` reports
   what a human would notice on a first read and says "verify with EXPLAIN".

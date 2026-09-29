@@ -16,6 +16,7 @@ from migration_guard.directives import collect, parse_directive
 from migration_guard.models import Severity
 from migration_guard.report import github, json_report, render, text
 from migration_guard.rules import RULE_IDS, RULES
+from migration_guard.schema import parse_schema
 from migration_guard.sqltext import parse_sql
 from migration_guard import statements as st
 
@@ -24,17 +25,41 @@ V57 = st.parse_version("5.7.44")
 V8012 = st.parse_version("8.0.12")
 
 
-def findings(sql: str, version=V80, path: str = "m.sql") -> list:
-    return analyze_text(path, sql, version).findings
+def findings(sql: str, version=V80, path: str = "m.sql", schema=None) -> list:
+    return analyze_text(path, sql, version, schema).findings
 
 
-def rules_fired(sql: str, version=V80) -> set[str]:
-    return {finding.rule for finding in findings(sql, version)}
+def rules_fired(sql: str, version=V80, schema=None) -> set[str]:
+    return {finding.rule for finding in findings(sql, version, schema=schema)}
 
 
 def alter_of(sql: str, version=V80):
     context = build_context("m.sql", sql, version)
     return context.alters[0]
+
+
+#: An existing schema for the schema-aware rules. Written the way a dump writes
+#: it, backticks and all, because that is the input those rules actually get.
+SCHEMA_SQL = """
+CREATE TABLE `orders` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `customer_id` INT NOT NULL,
+  `total` DECIMAL(12,2) NOT NULL,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'new',
+  `created_at` DATETIME NOT NULL,
+  `wide` VARCHAR(1000) DEFAULT NULL,
+  `body` TEXT,
+  PRIMARY KEY (`id`),
+  KEY `idx_customer` (`customer_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `order_items` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `order_id` BIGINT NOT NULL,
+  `qty` SMALLINT NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
 
 
 class VersionParsingTests(unittest.TestCase):
@@ -308,6 +333,12 @@ DELETE FROM items WHERE note LIKE '%x';
 ALTER TABLE items ADD FULLTEXT INDEX ft (body);
 ALTER TABLE items PARTITION BY HASH (id) PARTITIONS 4;
 DROP INDEX idx ON other;
+ALTER TABLE orders ADD INDEX idx_customer (customer_id);
+ALTER TABLE orders ADD INDEX idx_cust_status (customer_id, status);
+ALTER TABLE orders ADD INDEX idx_body (body);
+ALTER TABLE orders ADD INDEX idx_wide (wide);
+ALTER TABLE orders MODIFY COLUMN total DECIMAL(8,2);
+ALTER TABLE orders DROP COLUMN nosuch;
 DELIMITER $$
 SELECT 1$$
 DELIMITER ;
@@ -319,7 +350,13 @@ UPDATE t SET a = 'unterminated;
         self.assertEqual(set(RULE_IDS), set(RULE_IDS))
 
     def test_the_fixture_fires_every_registered_rule(self) -> None:
-        fired = rules_fired(self.EVERYTHING_WRONG)
+        # Schema-aware rules only run when a schema is supplied, so the fixture
+        # is judged twice and the union must cover the whole registry. A rule
+        # that can never fire protects nobody, and this is the only thing that
+        # notices.
+        fired = rules_fired(self.EVERYTHING_WRONG) | rules_fired(
+            self.EVERYTHING_WRONG, schema=parse_schema(SCHEMA_SQL)
+        )
         missing = sorted(set(RULE_IDS) - fired)
         self.assertEqual(
             missing,
@@ -328,7 +365,9 @@ UPDATE t SET a = 'unterminated;
         )
 
     def test_no_rule_invented_an_undocumented_id(self) -> None:
-        fired = rules_fired(self.EVERYTHING_WRONG)
+        fired = rules_fired(self.EVERYTHING_WRONG) | rules_fired(
+            self.EVERYTHING_WRONG, schema=parse_schema(SCHEMA_SQL)
+        )
         self.assertEqual(sorted(fired - set(RULE_IDS)), [])
 
     def test_the_registry_is_not_empty(self) -> None:

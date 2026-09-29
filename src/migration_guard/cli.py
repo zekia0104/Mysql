@@ -32,6 +32,7 @@ from .models import (
 from .report import FORMAT_CHOICES, render
 from .report.text import DEFAULT_WIDTH, render as render_text, safe_write
 from .rules import RULE_IDS
+from .schema import parse_schema
 from .statements import parse_version
 
 PROG = "migration-guard"
@@ -77,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="GLOB",
         help="skip paths matching this fnmatch pattern (repeatable), e.g. '*/generated/*'",
+    )
+    parser.add_argument(
+        "--schema",
+        metavar="PATH",
+        help=(
+            "an existing schema to judge the migration against, as produced by "
+            "'mysqldump --no-data'. Enables the type, index and column checks; without it "
+            "they stay silent rather than guessing."
+        ),
     )
     parser.add_argument(
         "--stdin",
@@ -216,7 +226,27 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     version = parse_version(args.target_version)
-    report = review(files, version=version, version_label=args.target_version)
+
+    schema = None
+    if args.schema:
+        try:
+            schema = parse_schema(read_text(Path(args.schema)), source=args.schema)
+        except OSError as exc:
+            sys.stderr.write(f"{PROG}: cannot read --schema {args.schema}: {exc}\n")
+            return EXIT_ERROR
+        if not len(schema):
+            sys.stderr.write(
+                f"{PROG}: --schema {args.schema} contains no CREATE TABLE statements\n"
+            )
+            return EXIT_ERROR
+
+    report = review(
+        files,
+        version=version,
+        version_label=args.target_version,
+        schema=schema,
+        schema_source=args.schema or "",
+    )
 
     if not args.quiet:
         if args.format == "text":

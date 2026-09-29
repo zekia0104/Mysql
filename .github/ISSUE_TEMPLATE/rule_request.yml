@@ -1,0 +1,73 @@
+name: Rule request
+description: Suggest a check that would have caught a real incident.
+title: "[rule] "
+labels: ["enhancement", "rule"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The best rule requests describe an incident, not a keyword. "A `DELETE`
+        without a `LIMIT` held locks for 40 minutes on a 90M-row table" tells me
+        what to build and how severe it should be.
+
+  - type: textarea
+    id: incident
+    attributes:
+      label: What went wrong
+      description: The migration statement, what it did to the database, and how you noticed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: statement
+    attributes:
+      label: The statement that should be flagged
+      render: sql
+    validations:
+      required: true
+
+  - type: textarea
+    id: safe
+    attributes:
+      label: The safe alternative
+      description: |
+        Every finding in this project ends with the fix. What would you have
+        written instead, and would it still do the job?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested severity
+      options:
+        - critical (data loss, or writes blocked on a large table)
+        - warning (expensive, or silently risky)
+        - info (advisory)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: version
+    attributes:
+      label: Is the verdict version dependent?
+      description: |
+        Many checks differ between MySQL 5.7 and 8.0. If yours does, say which
+        versions it applies to — that is what `--target-version` is for.
+      options:
+        - "No: it is the same on every version"
+        - "Yes: it applies to MySQL 8.0 only"
+        - "Yes: it applies to MySQL 5.7 and earlier"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This can be decided from the SQL text and a target version, without a database connection.
+          required: true
+        - label: This can be tested with a SQL string and no server.
+          required: true

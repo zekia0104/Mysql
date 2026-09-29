@@ -112,6 +112,13 @@ class AlterOption:
     detail: str = ""
     column: str = ""
     hidden: bool = False
+    #: For index definitions: the ``(column, prefix_length)`` pairs, which the
+    #: schema-aware rules need in order to compare against what exists.
+    column_specs: tuple[tuple[str, int | None], ...] = ()
+    #: For column definitions: the declared type, taken from the tokens rather
+    #: than re-parsed out of ``text``, so the schema-aware rules compare the
+    #: real type even when the statement's spacing is unusual.
+    type_text: str = ""
 
     @property
     def is_setting(self) -> bool:
@@ -391,6 +398,59 @@ def qualified_name(tokens: list[Token], start: int) -> tuple[str, str, int]:
     return "", "", index
 
 
+def matching_paren(tokens: list[Token], opening: int | None) -> int | None:
+    """Index of the ``)`` that closes the ``(`` at ``opening``, or ``None``."""
+    if opening is None or opening >= len(tokens):
+        return None
+    depth = 0
+    for index in range(opening, len(tokens)):
+        token = tokens[index]
+        if token.kind == PUNCT and token.value == "(":
+            depth += 1
+        elif token.kind == PUNCT and token.value == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def index_columns_from(group: list[Token]) -> list[tuple[str, int | None]]:
+    """``(column, prefix_length)`` pairs from an index definition's parentheses.
+
+    Handles ``(a, b)``, ``(a(10), b)`` and ``(a ASC, b DESC)``, because all three
+    appear in real dumps and a prefix length changes whether InnoDB will accept
+    the index at all.
+    """
+    opening = next((i for i, token in enumerate(group) if token.is_punct("(")), None)
+    closing = matching_paren(group, opening)
+    if opening is None or closing is None:
+        return []
+
+    found: list[tuple[str, int | None]] = []
+    for part in split_top_level(group[opening + 1 : closing]):
+        name = ""
+        prefix: int | None = None
+        for index, token in enumerate(part):
+            if not name:
+                if token.kind not in IDENTIFIER_KINDS:
+                    break
+                if token.kind == WORD and token.upper in ("ASC", "DESC"):
+                    break
+                name = token.value
+                continue
+            if token.kind == PUNCT and token.value == "(":
+                for later in part[index + 1 :]:
+                    if later.kind == NUMBER:
+                        prefix = int(later.value)
+                        break
+                break
+            if token.kind == WORD and token.upper in ("ASC", "DESC"):
+                break
+        if name:
+            found.append((name, prefix))
+    return found
+
+
 def tokens_after(tokens: list[Token], keyword: str) -> list[Token]:
     """Everything after the first top-level occurrence of ``keyword``."""
     depth = 0
@@ -468,12 +528,22 @@ def _classify_group(group: list[Token], version: tuple[int, int, int]) -> AlterO
     if words[0] == "DROP":
         return _classify_drop(group, words, text, line, version, hidden)
     if words[0] in ("MODIFY", "CHANGE"):
-        column = words[2] if len(words) > 2 else ""
+        column = _identifier_after(group, {"MODIFY", "CHANGE", "COLUMN"})
         operation, detail = classify_alter_option(MODIFY_COLUMN, version)
-        return AlterOption(MODIFY_COLUMN, text, line, operation, detail, column, hidden)
+        return AlterOption(
+            MODIFY_COLUMN,
+            text,
+            line,
+            operation,
+            detail,
+            column,
+            hidden,
+            (),
+            declared_type(group, column),
+        )
     if words[0] == "ALTER":
+        column = _identifier_after(group, {"ALTER", "COLUMN", "SET", "DROP", "DEFAULT"})
         operation, detail = classify_alter_option(SET_DEFAULT, version)
-        column = words[2] if len(words) > 2 else ""
         return AlterOption(SET_DEFAULT, text, line, operation, detail, column, hidden)
     if words[0] == "RENAME":
         operation, detail = classify_alter_option(RENAME, version)
@@ -522,7 +592,16 @@ def _classify_add(
         rest = rest[1:]
     if rest and rest[0] in ("INDEX", "KEY"):
         operation, detail = classify_alter_option(ADD_INDEX, version)
-        return AlterOption(ADD_INDEX, text, line, operation, detail, _index_name(group), hidden)
+        return AlterOption(
+            ADD_INDEX,
+            text,
+            line,
+            operation,
+            detail,
+            _index_name(group),
+            hidden,
+            tuple(index_columns_from(group)),
+        )
 
     if rest and rest[0] in ("UNIQUE", "FULLTEXT", "SPATIAL"):
         operation, detail = classify_alter_option(
@@ -532,7 +611,16 @@ def _classify_add(
             fulltext=rest[0] == "FULLTEXT",
             spatial=rest[0] == "SPATIAL",
         )
-        return AlterOption(ADD_INDEX, text, line, operation, detail, _index_name(group), hidden)
+        return AlterOption(
+            ADD_INDEX,
+            text,
+            line,
+            operation,
+            detail,
+            _index_name(group),
+            hidden,
+            tuple(index_columns_from(group)),
+        )
 
     if rest and rest[0] == "PRIMARY":
         operation, detail = classify_alter_option(ADD_PRIMARY_KEY, version)
@@ -557,7 +645,17 @@ def _classify_add(
     positioned = contains_word(group, "AFTER", "FIRST")
     operation, detail = classify_alter_option(ADD_COLUMN, version, positioned=positioned)
     column = _identifier_after(group, {"ADD", "COLUMN"})
-    return AlterOption(ADD_COLUMN, text, line, operation, detail, column, hidden)
+    return AlterOption(
+        ADD_COLUMN,
+        text,
+        line,
+        operation,
+        detail,
+        column,
+        hidden,
+        (),
+        declared_type(group, column),
+    )
 
 
 def _classify_drop(
@@ -593,6 +691,52 @@ def _value_after_equals(group: list[Token]) -> str:
         if token.kind == PUNCT and token.value == "=" and index + 1 < len(group):
             return group[index + 1].value
     return ""
+
+
+def declared_type(group: list[Token], column_name: str) -> str:
+    """The type a column definition declares, e.g. ``DECIMAL(8,2)``.
+
+    Everything after the column's name, up to the first attribute keyword.
+    Reading it from the tokens rather than from the rendered statement matters:
+    ``MODIFY COLUMN total DECIMAL(8,2)`` and ``MODIFY COLUMN `total`
+    DECIMAL(8,2)`` must produce the same comparison, and a text split would
+    depend on the spelling of the name.
+    """
+    stop = {
+        "NOT",
+        "NULL",
+        "DEFAULT",
+        "AUTO_INCREMENT",
+        "COMMENT",
+        "COLLATE",
+        "CHARACTER",
+        "PRIMARY",
+        "UNIQUE",
+        "KEY",
+        "AFTER",
+        "FIRST",
+        "REFERENCES",
+        "GENERATED",
+        "VIRTUAL",
+        "STORED",
+        "INVISIBLE",
+        "VISIBLE",
+    }
+    collected: list[Token] = []
+    seen_name = False
+    for token in group:
+        if not seen_name:
+            if token.kind in IDENTIFIER_KINDS and token.value.lower() == column_name.lower():
+                seen_name = True
+            continue
+        if token.kind == WORD and token.upper in stop:
+            break
+        collected.append(token)
+    # `MODIFY COLUMN` and `CHANGE COLUMN old new TYPE` repeat keywords; drop any
+    # that survived the name match.
+    while collected and collected[0].kind == WORD and collected[0].upper in ("COLUMN",):
+        collected.pop(0)
+    return join_tokens(collected)
 
 
 def _identifier_after(group: list[Token], skip: set[str]) -> str:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mysql-migration-guard"
-version = "0.1.0"
+version = "0.2.0"
 description = "Review MySQL migration SQL and find the statements that will lock your production tables."
 readme = "README.md"
 requires-python = ">=3.11"

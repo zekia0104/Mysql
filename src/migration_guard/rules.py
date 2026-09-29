@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from . import statements as st
 from .directives import Suppressions
 from .models import NUMBER, STRING, Finding, Severity, Statement
+from .schema import Schema, index_key_bytes, narrows_type
 from .sqltext import ParseResult
 
 # --------------------------------------------------------------------------- #
@@ -36,6 +37,9 @@ class RuleContext:
     alters: list[st.AlterTable] = field(default_factory=list)
     dmls: list[tuple[Statement, st.DmlShape]] = field(default_factory=list)
     suppressions: Suppressions = field(default_factory=Suppressions)
+    #: The existing schema, when one was supplied. ``None`` means the
+    #: schema-aware rules do not run -- they are skipped rather than guessed at.
+    schema: Schema | None = None
 
     @property
     def statements(self) -> list[Statement]:
@@ -803,6 +807,252 @@ def rule_sql_mode_relaxed(ctx: RuleContext) -> Iterator[Finding]:
 
 
 # --------------------------------------------------------------------------- #
+# Schema-aware rules
+#
+# These need the existing schema, so they are silent when --schema was not
+# given. Half the dangerous changes in a migration are only dangerous relative
+# to what is already there, and guessing at the rest would be worse than saying
+# nothing: a rule that invents a column that does not exist would be reported as
+# a false positive on every run.
+# --------------------------------------------------------------------------- #
+
+
+def _alter_columns(alter: st.AlterTable) -> list[st.AlterOption]:
+    return [
+        option
+        for option in alter.structural
+        if option.kind in (st.ADD_COLUMN, st.MODIFY_COLUMN, st.SET_DEFAULT, st.DROP_COLUMN)
+        and option.column
+    ]
+
+
+def rule_duplicate_index(ctx: RuleContext) -> Iterator[Finding]:
+    """An index the table already has, added again."""
+    if ctx.schema is None:
+        return
+    for alter in ctx.alters:
+        table = ctx.schema.table(alter.table_name)
+        if table is None:
+            continue
+        for option in alter.structural:
+            if option.kind != st.ADD_INDEX or not option.column_specs:
+                continue
+            wanted = [name.lower() for name, _ in option.column_specs]
+            existing = table.indexes_covering(wanted)
+            if not existing:
+                continue
+            yield Finding(
+                rule="ddl.duplicate-index",
+                severity=Severity.WARNING,
+                title=f"{alter.table_name} already has an index on ({', '.join(wanted)})",
+                file=ctx.path,
+                line=option.line,
+                scope=alter.table_name,
+                statement_index=alter.statement.index,
+                statement_kind="ALTER",
+                detail=(
+                    f"The schema already declares `{existing[0].name}` over exactly these "
+                    "columns. Adding a second one costs write throughput on every INSERT and "
+                    "buys nothing, because the optimizer only needs one usable index."
+                ),
+                snippet=option.text,
+                hint=f"Drop the new index, or replace `{existing[0].name}` if the intent was to rename it.",
+            )
+
+
+def rule_redundant_index(ctx: RuleContext) -> Iterator[Finding]:
+    """The new index makes an existing one unnecessary."""
+    if ctx.schema is None:
+        return
+    for alter in ctx.alters:
+        table = ctx.schema.table(alter.table_name)
+        if table is None:
+            continue
+        for option in alter.structural:
+            if option.kind != st.ADD_INDEX or not option.column_specs:
+                continue
+            wanted = [name.lower() for name, _ in option.column_specs]
+            covered = table.indexes_prefixed_by(wanted)
+            for index in covered:
+                if index.primary:
+                    continue
+                yield Finding(
+                    rule="ddl.redundant-index",
+                    severity=Severity.INFO,
+                    title=f"the new index makes `{index.name}` redundant",
+                    file=ctx.path,
+                    line=option.line,
+                    scope=alter.table_name,
+                    statement_index=alter.statement.index,
+                    statement_kind="ALTER",
+                    detail=(
+                        f"`{index.name}` indexes ({', '.join(index.column_names())}), which is a "
+                        f"leading prefix of the new ({', '.join(wanted)}). Every query that can "
+                        "use the shorter index can use the longer one, so the shorter only costs "
+                        "writes from here on."
+                    ),
+                    snippet=option.text,
+                    hint=f"Plan a follow-up `ALTER TABLE {alter.table_name} DROP INDEX {index.name}`.",
+                )
+
+
+def rule_narrow_type(ctx: RuleContext) -> Iterator[Finding]:
+    """A column change that cannot hold what the column already holds."""
+    if ctx.schema is None:
+        return
+    for alter in ctx.alters:
+        table = ctx.schema.table(alter.table_name)
+        if table is None:
+            continue
+        for option in alter.structural:
+            if option.kind not in (st.MODIFY_COLUMN, st.ADD_COLUMN):
+                continue
+            if not option.column:
+                continue
+            current = table.column(option.column)
+            if current is None:
+                continue
+            if not option.type_text:
+                continue
+            reason = narrows_type(current, option.type_text)
+            if reason is None:
+                continue
+            yield Finding(
+                rule="ddl.narrow-type",
+                severity=Severity.CRITICAL,
+                title=f"{alter.table_name}.{option.column}: {reason}",
+                file=ctx.path,
+                line=option.line,
+                scope=f"{alter.table_name}.{option.column}",
+                statement_index=alter.statement.index,
+                statement_kind="ALTER",
+                detail=(
+                    "Under strict mode the ALTER fails on the first row that does not fit; with "
+                    "strict mode off it truncates silently and the original values are gone. "
+                    "Either way the table is copied, so the failure happens after the rebuild "
+                    "has already run."
+                ),
+                snippet=option.text,
+                hint=(
+                    "Check the real maximum first: `SELECT MAX(LENGTH(col)) FROM t`, then widen "
+                    "or keep the current type."
+                ),
+            )
+
+
+def rule_text_index_without_prefix(ctx: RuleContext) -> Iterator[Finding]:
+    """Indexing a TEXT column without a prefix length is rejected by MySQL."""
+    if ctx.schema is None:
+        return
+    for alter in ctx.alters:
+        table = ctx.schema.table(alter.table_name)
+        if table is None:
+            continue
+        for option in alter.structural:
+            if option.kind != st.ADD_INDEX or not option.column_specs:
+                continue
+            for name, prefix in option.column_specs:
+                column = table.column(name)
+                if column is None or prefix is not None:
+                    continue
+                if not column.is_text_or_blob:
+                    continue
+                yield Finding(
+                    rule="ddl.text-index-no-prefix",
+                    severity=Severity.WARNING,
+                    title=f"index on {alter.table_name}.{name} needs a prefix length",
+                    file=ctx.path,
+                    line=option.line,
+                    scope=alter.table_name,
+                    statement_index=alter.statement.index,
+                    statement_kind="ALTER",
+                    detail=(
+                        f"`{name}` is {column.base_type}, which is unbounded, so MySQL rejects an "
+                        "index on it without a prefix length: ERROR 1170. The migration fails at "
+                        "deploy time rather than here, unless the prefix is written out."
+                    ),
+                    snippet=option.text,
+                    hint=f"Write it as `{name}(191)` (or another length you can justify).",
+                )
+
+
+def rule_index_too_long(ctx: RuleContext) -> Iterator[Finding]:
+    """A key longer than InnoDB will accept."""
+    if ctx.schema is None:
+        return
+    for alter in ctx.alters:
+        table = ctx.schema.table(alter.table_name)
+        if table is None:
+            continue
+        for option in alter.structural:
+            if option.kind != st.ADD_INDEX or not option.column_specs:
+                continue
+            specs = [st_spec(schema_name, prefix) for schema_name, prefix in option.column_specs]
+            total, unbounded = index_key_bytes(table, specs)
+            if total is None or total <= table.key_limit:
+                continue
+            yield Finding(
+                rule="ddl.index-too-long",
+                severity=Severity.WARNING,
+                title=f"index on {alter.table_name} is {total} bytes, over the {table.key_limit}-byte limit",
+                file=ctx.path,
+                line=option.line,
+                scope=alter.table_name,
+                statement_index=alter.statement.index,
+                statement_kind="ALTER",
+                value=float(total),
+                threshold=float(table.key_limit),
+                unit="bytes",
+                detail=(
+                    f"InnoDB accepts at most {table.key_limit} bytes per key with "
+                    f"ROW_FORMAT={table.row_format or 'DYNAMIC'}. The columns here add up to "
+                    f"{total} bytes, so MySQL refuses the index with ERROR 1071."
+                ),
+                snippet=option.text,
+                hint="Index a prefix of the longest columns, or index fewer of them.",
+            )
+
+
+def rule_unknown_column(ctx: RuleContext) -> Iterator[Finding]:
+    """A migration naming a column that is not in the schema."""
+    if ctx.schema is None:
+        return
+    for alter in ctx.alters:
+        table = ctx.schema.table(alter.table_name)
+        if table is None:
+            continue
+        for option in _alter_columns(alter):
+            if option.kind == st.ADD_COLUMN:
+                continue
+            if table.column(option.column) is not None:
+                continue
+            yield Finding(
+                rule="ddl.unknown-column",
+                severity=Severity.WARNING,
+                title=f"{alter.table_name} has no column {option.column}",
+                file=ctx.path,
+                line=option.line,
+                scope=alter.table_name,
+                statement_index=alter.statement.index,
+                statement_kind="ALTER",
+                detail=(
+                    "The supplied schema does not declare this column, so the statement will fail "
+                    "with ERROR 1054. Check the spelling, and check that the schema you passed "
+                    "is the one this migration will actually run against."
+                ),
+                snippet=option.text,
+                hint=f"Known columns: {', '.join(c.name for c in table.columns[:12])}",
+            )
+
+
+def st_spec(name: str, prefix: int | None):
+    """Build an :class:`~migration_guard.schema.IndexColumn` without a circular import."""
+    from .schema import IndexColumn
+
+    return IndexColumn(name=name, prefix_length=prefix)
+
+
+# --------------------------------------------------------------------------- #
 # Suppression hygiene
 # --------------------------------------------------------------------------- #
 
@@ -885,6 +1135,13 @@ RULES: tuple[Rule, ...] = (
     rule_drop_index,
     rule_foreign_key,
     rule_unbounded_predicate,
+    # Schema-aware: silent unless --schema was supplied.
+    rule_narrow_type,
+    rule_text_index_without_prefix,
+    rule_unknown_column,
+    rule_duplicate_index,
+    rule_redundant_index,
+    rule_index_too_long,
     rule_sql_mode_relaxed,
     rule_executable_comment,
     rule_directive_unknown,
@@ -904,14 +1161,20 @@ RULE_IDS: tuple[str, ...] = (
     "ddl.drop-column",
     "ddl.drop-index",
     "ddl.drop-table",
+    "ddl.duplicate-index",
     "ddl.foreign-key",
     "ddl.implicit-algorithm",
+    "ddl.index-too-long",
     "ddl.instant-unsupported",
+    "ddl.narrow-type",
     "ddl.no-lock-wait-timeout",
-    "ddl.repeated-alter",
+    "ddl.redundant-index",
     "ddl.rename-table",
+    "ddl.repeated-alter",
     "ddl.table-rebuild",
+    "ddl.text-index-no-prefix",
     "ddl.truncate",
+    "ddl.unknown-column",
     "dml.delete-without-limit",
     "dml.delete-without-where",
     "dml.unbounded-predicate",

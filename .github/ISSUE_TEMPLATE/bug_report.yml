@@ -1,0 +1,76 @@
+name: Bug report
+description: A verdict is wrong, a statement was missed, or the tool crashed.
+title: "[bug] "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A wrong **verdict** is the most valuable kind of report here: it usually
+        means a hole in the online-DDL matrix, and that is the bug that matters
+        most. Please include the SQL.
+
+  - type: input
+    id: version
+    attributes:
+      label: migration-guard version
+      description: Output of `migration-guard --version`.
+      placeholder: "migration-guard 0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: target
+    attributes:
+      label: Target MySQL version
+      description: The `--target-version` you passed, or "default" if you did not pass one.
+      placeholder: "8.0.29"
+    validations:
+      required: true
+
+  - type: textarea
+    id: sql
+    attributes:
+      label: The SQL that reproduces it
+      description: Redact database and table names if you need to; keep the statement shape.
+      render: sql
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: Which rule should have fired, or should not have?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Paste the output, or the traceback.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: server
+    attributes:
+      label: Your actual server version
+      description: |
+        The version the migration will really run against (`SELECT VERSION()`).
+        If it differs from `--target-version`, that is a finding in itself.
+      placeholder: "8.0.46"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I am running the latest release.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true

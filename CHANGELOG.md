@@ -9,6 +9,51 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 Nothing yet.
 
+## [0.2.0] - 2026-09-26
+
+### Added
+
+- **Schema-aware rules**, enabled by `--schema <dump>`. Pass the output of
+  `mysqldump --no-data` and six more checks run, because half the dangerous
+  changes in a migration are only dangerous relative to what is already there.
+
+  - `ddl.narrow-type` -- `MODIFY` to a width that cannot hold the current data.
+    Under strict mode the ALTER fails on the first offending row *after* the
+    table has been rebuilt; without strict mode it truncates and the original
+    values are gone.
+  - `ddl.duplicate-index` -- an index over exactly the columns the table already
+    indexes. It costs write throughput on every INSERT and buys nothing.
+  - `ddl.redundant-index` -- the new index makes an existing one unnecessary,
+    because the shorter one is a leading prefix of the longer.
+  - `ddl.text-index-no-prefix` -- indexing a `TEXT` or `BLOB` column without a
+    prefix length, which MySQL rejects with `ERROR 1170` at deploy time.
+  - `ddl.index-too-long` -- a key over InnoDB's 3072-byte limit (`ERROR 1071`),
+    computed from the real column widths and the table's character set.
+  - `ddl.unknown-column` -- the migration names a column the schema does not
+    declare, which is usually a typo and always `ERROR 1054`.
+
+  Without `--schema` these rules stay silent rather than guessing, and the report
+  records which sources were used, so a reader can tell "checked and fine" from
+  "not checked".
+
+- `examples/schema/shop.sql`, a dump written the way `mysqldump --no-data`
+  writes one, so the schema-aware rules can be exercised without a database.
+
+### Changed
+
+- The registry coverage test now judges its fixture twice, once with a schema and
+  once without, and asserts the union covers every registered rule. It reported
+  all six new rules as unreachable before they were wired in, which is precisely
+  what it exists for.
+
+### Fixed
+
+- `MODIFY COLUMN` and `CHANGE COLUMN` reported the column name in upper case,
+  because it was taken from an uppercased keyword list rather than from the
+  token. The same mistake had already been fixed for `ADD COLUMN`; both now read
+  the name from the token, and the declared type with it, so a schema comparison
+  is not sensitive to how the statement happens to be spelled.
+
 ## [0.1.0] - 2026-09-26
 
 First release.

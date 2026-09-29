@@ -14,6 +14,7 @@ from . import directives as directives_module
 from . import rules as rules_module
 from . import statements as st
 from .models import FileReview, Finding, Report, Severity
+from .schema import Schema
 from .sqltext import ParseResult, parse_sql
 
 TOOL_NAME = "migration-guard"
@@ -24,7 +25,10 @@ UNSUPPRESSIBLE_PREFIXES = ("directive.",)
 
 
 def build_context(
-    path: str, text: str, version: tuple[int, int, int]
+    path: str,
+    text: str,
+    version: tuple[int, int, int],
+    schema: Schema | None = None,
 ) -> rules_module.RuleContext:
     """Lex, parse and classify one file, ready for the rules."""
     parse: ParseResult = parse_sql(text)
@@ -48,6 +52,7 @@ def build_context(
         alters=alters,
         dmls=dmls,
         suppressions=suppressions,
+        schema=schema,
     )
 
 
@@ -55,9 +60,14 @@ def _suppressible(rule: str) -> bool:
     return not rule.startswith(UNSUPPRESSIBLE_PREFIXES)
 
 
-def analyze_text(path: str, text: str, version: tuple[int, int, int]) -> FileReview:
+def analyze_text(
+    path: str,
+    text: str,
+    version: tuple[int, int, int],
+    schema: Schema | None = None,
+) -> FileReview:
     """Review one file's text and return its findings."""
-    context = build_context(path, text, version)
+    context = build_context(path, text, version, schema)
     review = FileReview(path=path, statement_count=len(context.statements))
 
     suppressed = 0
@@ -91,8 +101,15 @@ def review(
     *,
     version: tuple[int, int, int],
     version_label: str = "",
+    schema: Schema | None = None,
+    schema_source: str = "",
 ) -> Report:
-    """Review several ``(path, text)`` pairs into one report."""
+    """Review several ``(path, text)`` pairs into one report.
+
+    ``schema`` is optional. Without it the schema-aware rules stay silent rather
+    than guessing, and the report records which sources were actually used so a
+    reader can tell the difference between "checked and fine" and "not checked".
+    """
     report = Report(
         tool=TOOL_NAME,
         version=_version(),
@@ -100,15 +117,22 @@ def review(
         target_version=version_label or ".".join(str(part) for part in version),
     )
     for path, text in files:
-        report.files.append(analyze_text(path, text, version))
+        report.files.append(analyze_text(path, text, version, schema))
 
-    total_suppressed = sum(
-        1 for file_review in report.files for note in file_review.notes if "suppressed" in note
-    )
-    if total_suppressed:
+    if schema is not None:
+        report.sources["schema"] = schema_source or "schema"
+        report.sources["schema_tables"] = len(schema)
+    else:
         report.notes.append(
-            "Some findings were suppressed by `migration-guard: allow(...)` directives; "
-            "the directives are listed in the JSON output."
+            "No --schema was given, so type, index and column checks did not run. "
+            "Produce one with: mysqldump --no-data --skip-comments --compact DB > schema.sql"
+        )
+    for note in schema.notes if schema is not None else []:
+        report.notes.append(note)
+
+    if any("suppressed" in note for review_ in report.files for note in review_.notes):
+        report.notes.append(
+            "Some findings were suppressed by `migration-guard: allow(...)` directives."
         )
     return report
 
