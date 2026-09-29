@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (python ${{ matrix.python }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # The suite needs no dependencies and no install step, on purpose: if
+      # this ever fails, a dependency has crept in.
+      - name: Run the test suite uninstalled
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Install the package
+        run: python -m pip install .
+
+      - name: Run the test suite against the installed package
+        run: python -m unittest discover -s tests -t .
+
+  self-check:
+    name: the tool judges its own examples correctly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install .
+
+      # The repository ships two migrations that differ only in how they are
+      # written. If the tool ever stops telling them apart, this job fails --
+      # which is the shortest possible end-to-end proof that the rules work.
+      - name: The bad example must be reported
+        run: |
+          set +e
+          migration-guard examples/bad --quiet
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 2
+
+      - name: The good example must be clean on 8.0
+        run: |
+          set +e
+          migration-guard examples/good --quiet
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 0
+
+      # The good example is only good on a server that can add a column without
+      # rebuilding: on 5.7 the very same file copies the whole table. That is the
+      # point of --target-version, so it is asserted rather than assumed.
+      - name: The same file must be flagged on 5.7
+        run: |
+          set +e
+          migration-guard examples/good --quiet --target-version 5.7
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 2
+
+      - name: The bad example must also be reported on 5.7
+        run: |
+          set +e
+          migration-guard examples/bad --quiet --target-version 5.7
+          code=$?
+          set -e
+          test "$code" -eq 2
+
+  exit-codes:
+    name: exit-code contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install .
+
+      - name: --fail-on never always exits 0
+        run: migration-guard examples/bad --quiet --fail-on never
+
+      - name: A missing path exits 3
+        run: |
+          set +e
+          migration-guard does/not/exist.sql --quiet
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 3
+
+      - name: No arguments exits 3 with a message
+        run: |
+          set +e
+          migration-guard --quiet
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 3
+
+      - name: --stdin works
+        run: |
+          set +e
+          printf 'ALTER TABLE t MODIFY COLUMN c INT;\n' | migration-guard --stdin --quiet
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -eq 2
+
+      - name: --format github emits annotations
+        run: |
+          migration-guard examples/bad --format github > annotations.txt || true
+          grep -q '^::error file=' annotations.txt
+          grep -q 'title=ddl.table-rebuild' annotations.txt
+          cat annotations.txt | head -5
+
+      - name: --format json is parseable
+        run: |
+          migration-guard examples/bad --format json --output report.json --fail-on never
+          python -c "import json; d=json.load(open('report.json')); assert d['exit_code'] == 2, d['exit_code']; print('findings:', len(d['findings']))"
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: python -m pip install ruff
+
+      # --exit-zero on purpose: ruff could not be run in the environment this
+      # project was bootstrapped in, so findings are published as annotations
+      # rather than as a pass/fail gate. Delete --exit-zero once a run is clean.
+      - name: Ruff
+        run: ruff check --output-format=github --exit-zero .

@@ -1,0 +1,64 @@
+name: MySQL migration guard
+description: Review MySQL migration SQL in a pull request and annotate the statements that will lock production tables.
+author: zekia0104
+branding:
+  icon: shield
+  color: orange
+
+inputs:
+  paths:
+    description: Files or directories to review.
+    required: false
+    default: migrations
+  target-version:
+    description: |
+      MySQL version to judge online DDL against, e.g. 8.0.29 or 5.7.44.
+      A statement that is metadata-only on 8.0.29 rebuilds the table on 5.7, so
+      this is the difference between a clean review and a wrong one.
+    required: false
+    default: "8.0.29"
+  fail-on:
+    description: Lowest severity that fails the step (warning, critical or never).
+    required: false
+    default: warning
+  exclude:
+    description: Newline-separated fnmatch patterns to skip, e.g. */generated/*.
+    required: false
+    default: ""
+  python-version:
+    description: Python version to run the guard with.
+    required: false
+    default: "3.12"
+
+outputs:
+  exit-code:
+    description: 0 clean, 1 warning, 2 critical, 3 error.
+    value: ${{ steps.guard.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install migration-guard
+      shell: bash
+      run: python -m pip install --disable-pip-version-check "mysql-migration-guard @ git+https://github.com/${{ github.action_repository }}@${{ github.action_ref }}"
+
+    - name: Review migrations
+      id: guard
+      shell: bash
+      # Annotations are attached to the lines of the diff, so a reviewer sees
+      # the problem where it is rather than in a log they have to scroll.
+      run: |
+        set +e
+        args=(--format github --fail-on "${{ inputs.fail-on }}" --target-version "${{ inputs.target-version }}")
+        while IFS= read -r pattern; do
+          [ -n "$pattern" ] && args+=(--exclude "$pattern")
+        done <<< "${{ inputs.exclude }}"
+        migration-guard "${args[@]}" "${{ inputs.paths }}"
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        exit "$code"
